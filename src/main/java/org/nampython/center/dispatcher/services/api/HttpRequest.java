@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Map;
 
 public interface HttpRequest {
-
     void setMethod(String method);
 
     void setRequestURL(String requestUrl);

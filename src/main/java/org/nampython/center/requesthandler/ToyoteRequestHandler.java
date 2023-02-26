@@ -3,6 +3,10 @@ package org.nampython.center.requesthandler;
 import com.cyecize.ioc.annotations.Autowired;
 import com.cyecize.ioc.annotations.Service;
 import org.nampython.center.dispatcher.services.api.HttpRequest;
+import org.nampython.center.dispatcher.services.api.HttpResponse;
+import org.nampython.center.dispatcher.services.api.HttpResponseImpl;
+import org.nampython.center.dispatcher.services.api.HttpStatus;
+import org.nampython.center.requesthandler.exception.RequestTooBigException;
 import org.nampython.center.requesthandler.service.HttpRequestParser;
 import org.nampython.log.LoggingService;
 import org.nampython.support.RequestHandler;
@@ -22,19 +26,18 @@ public class ToyoteRequestHandler implements RequestHandler {
 
    private final LoggingService loggingService;
     private final HttpRequestParser httpRequestParser;
+    private final ErrorHandlingService errorHandlingService;
 
 
     @Autowired
-    public ToyoteRequestHandler(LoggingService loggingService, HttpRequestParser httpRequestParser) {
+    public ToyoteRequestHandler(LoggingService loggingService, HttpRequestParser httpRequestParser, ErrorHandlingService errorHandlingService) {
         this.loggingService = loggingService;
         this.httpRequestParser = httpRequestParser;
+        this.errorHandlingService = errorHandlingService;
     }
-
-
 
     @Override
     public void init() {
-
     }
 
     /**
@@ -47,14 +50,42 @@ public class ToyoteRequestHandler implements RequestHandler {
      * @throws IOException
      */
     @Override
-    public boolean handleRequest(InputStream inputStream, OutputStream responseStream, RequestHandlerSharedData sharedData) throws IOException {
-        loggingService.info("Start the request procesing in the " + ToyoteRequestHandler.class.getSimpleName());
-        final HttpRequest httpRequest = this.httpRequestParser.parseHttpRequest(inputStream);
+    public boolean handleRequest(InputStream inputStream, OutputStream outputStream, RequestHandlerSharedData sharedData) throws IOException {
+        try {
+            loggingService.info("Start the request procesing in the " + ToyoteRequestHandler.class.getSimpleName());
+            final HttpRequest httpRequest = this.httpRequestParser.parseHttpRequest(inputStream);
+            final HttpResponse httpResponse = new HttpResponseImpl();
+            sharedData.addObject("HTTP_REQUEST", httpRequest);
+            sharedData.addObject("HTTP_RESPONSE", httpResponse);
+        } catch (RequestTooBigException ex) {
+            this.disposeInputStream(ex.getContentLength(), inputStream);
+            return this.errorHandlingService.handleRequestTooBig(outputStream, ex, new HttpResponseImpl());
+        } catch (Exception e) {
+            return this.errorHandlingService.handleException(outputStream, e, new HttpResponseImpl(), HttpStatus.BAD_REQUEST);
+        }
         return false;
+    }
+
+    /**
+     * The purpose of this method is to read the input stream before closing it
+     * otherwise the TCP connection will not be closed properly.
+     */
+    private void disposeInputStream(int length, InputStream inputStream) throws IOException {
+        byte[] buffer = new byte[0];
+        int leftToRead = length;
+        int bytesRead = Math.min(2048, inputStream.available());
+
+        while (leftToRead > 0) {
+            buffer = inputStream.readNBytes(bytesRead);
+            leftToRead -= bytesRead;
+            bytesRead = Math.min(2048, inputStream.available());
+        }
+
+        buffer = null;
     }
 
     @Override
     public int order() {
-        return 0;
+        return Integer.MIN_VALUE;
     }
 }

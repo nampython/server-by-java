@@ -5,12 +5,8 @@ package org.nampython.log;
  * The implementation can be found in Javache Web Server.
  */
 public interface LoggingService {
-
     void info(Object msg, Object... params);
-
     void warning(Object msg, Object... params);
-
     void error(Object msg, Object... params);
-
     void printStackTrace(Throwable throwable);
 }

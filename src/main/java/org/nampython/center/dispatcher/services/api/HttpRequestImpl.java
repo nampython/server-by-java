@@ -165,4 +165,21 @@ public class HttpRequestImpl implements HttpRequest {
     public Map<String, HttpCookie> getCookies() {
         return this.cookies;
     }
+
+    @Override
+    public String toString() {
+        final StringBuffer sb = new StringBuffer("HttpRequestImpl{");
+        sb.append("method='").append(method).append('\'');
+        sb.append(", requestURL='").append(requestURL).append('\'');
+        sb.append(", session=").append(session);
+        sb.append(", contentLength=").append(contentLength);
+        sb.append(", multipartFiles=").append(multipartFiles);
+        sb.append(", headers=").append(headers);
+        sb.append(", queryParameters=").append(queryParameters);
+        sb.append(", bodyParameters=").append(bodyParameters);
+        sb.append(", bodyParametersAsList=").append(bodyParametersAsList);
+        sb.append(", cookies=").append(cookies);
+        sb.append('}');
+        return sb.toString();
+    }
 }

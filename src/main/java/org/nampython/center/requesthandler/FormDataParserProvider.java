@@ -3,12 +3,11 @@ package org.nampython.center.requesthandler;
 
 import java.util.Arrays;
 
-import static org.nampython.center.requesthandler.ToyoteConstants.MULTIPART_FORM_DATA;
 import static org.nampython.center.requesthandler.ToyoteConstants.TEXT_PLAIN;
 
 public enum FormDataParserProvider {
-    DEFAULT(TEXT_PLAIN, FormDataParserDefaultImpl.class),
-    MULTIPART(MULTIPART_FORM_DATA, FormDataParserMultipartImpl.class);
+    DEFAULT(TEXT_PLAIN, FormDataParserDefaultImpl.class);
+//    MULTIPART(MULTIPART_FORM_DATA, FormDataParserMultipartImpl.class);
 
     private final String contentType;
     private final Class<? extends FormDataParser> parserType;

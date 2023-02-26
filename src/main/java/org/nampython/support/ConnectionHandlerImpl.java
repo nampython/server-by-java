@@ -8,7 +8,6 @@ import java.net.Socket;
 import java.util.List;
 
 public class ConnectionHandlerImpl implements Runnable {
-
     private final Socket clientSocket;
 
     private final List<RequestHandler> requestHandlers;

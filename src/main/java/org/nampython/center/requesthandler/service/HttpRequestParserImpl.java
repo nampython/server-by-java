@@ -5,10 +5,10 @@ import com.cyecize.ioc.annotations.Service;
 import org.nampython.center.dispatcher.services.api.HttpCookieImpl;
 import org.nampython.center.dispatcher.services.api.HttpRequest;
 import org.nampython.center.dispatcher.services.api.HttpRequestImpl;
-import org.nampython.center.requesthandler.exception.CannotParseRequestException;
 import org.nampython.center.requesthandler.FormDataParser;
 import org.nampython.center.requesthandler.FormDataParserProvider;
 import org.nampython.center.requesthandler.ToyoteConstants;
+import org.nampython.center.requesthandler.exception.CannotParseRequestException;
 import org.nampython.center.requesthandler.exception.RequestTooBigException;
 import org.nampython.config.JavacheConfigService;
 import org.nampython.config.JavacheConfigValue;
@@ -39,9 +39,10 @@ public class HttpRequestParserImpl implements HttpRequestParser {
     private final int maxRequestSize;
 
     @Autowired
-    public HttpRequestParserImpl(List<FormDataParser> formDataParsers,
-                                 LoggingService loggingService,
-                                 JavacheConfigService configService) {
+    public HttpRequestParserImpl(
+            List<FormDataParser> formDataParsers,
+            LoggingService loggingService,
+            JavacheConfigService configService) {
         this.formDataParsers = formDataParsers;
         this.loggingService = loggingService;
         this.showRequestLog = configService.getConfigParam(JavacheConfigValue.SHOW_REQUEST_LOG, boolean.class);
@@ -56,25 +57,106 @@ public class HttpRequestParserImpl implements HttpRequestParser {
      */
     @Override
     public HttpRequest parseHttpRequest(InputStream inputStream) throws CannotParseRequestException {
-        final HttpRequest request = new HttpRequestImpl();
+        try {
+            final HttpRequest request = new HttpRequestImpl();
+            //GET / HTTP/1.1
+            //Host: localhost:8000
+            //Connection: keep-alive
+            //sec-ch-ua: "Not_A Brand";v="99", "Google Chrome";v="109", "Chromium";v="109"
+            //sec-ch-ua-mobile: ?0
+            //sec-ch-ua-platform: "Windows"
+            //Upgrade-Insecure-Requests: 1
+            //User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36
+            //Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9
+            //Sec-Fetch-Site: none
+            //Sec-Fetch-Mode: navigate
+            //Sec-Fetch-User: ?1
+            //Sec-Fetch-Dest: document
+            //Accept-Encoding: gzip, deflate, br
+            //Accept-Language: en-US,en;q=0.9
+            //Cookie: amp_adc4c4=hAg1AIoLLyB9zCe6YyOcOE...1gppahnlf.1gppe4hqv.0.0.0
+            final List<String> headers = parseMetadataLines(inputStream, false);
+            loggingService.info("----------------------------THE DETAILS INFORMATION REQUEST------------------------------------------------------");
+            headers.forEach(System.out::println);
+            loggingService.info("----------------------------------------------------------------------------------");
+            this.setMethodAndURL(headers.get(0), request);
+            this.addQueryParameters(headers.get(0), request);
+            this.addHeaders(headers, request);
+            this.initCookies(request);
+            this.setContentLength(inputStream, request);
+            if (request.getContentLength() > this.maxRequestSize) {
+                throw new RequestTooBigException(REQUEST_TOO_BIG_MSG, request.getContentLength());
+            }
+            final String contentType = request.getContentType();
+            final FormDataParserProvider formDataParserProvider = FormDataParserProvider.findByContentType(contentType);
+            this.getParser(formDataParserProvider).parseBodyParams(inputStream, request);
+            this.trimRequestPath(request);
+            return request;
+        } catch (IOException ex) {
+            throw new CannotParseRequestException(ex.getMessage(), ex);
+        }
+    }
 
-        final List<String> headers = parseMetadataLines(inputStream, false);
-        headers.forEach(System.out::println);
-//            this.setMethodAndURL(headers.get(0), request);
-//            this.addQueryParameters(headers.get(0), request);
-//            this.addHeaders(headers, request);
-//            this.initCookies(request);
-//            this.setContentLength(inputStream, request);
-//            if (request.getContentLength() > this.maxRequestSize) {
-//                throw new RequestTooBigException(REQUEST_TOO_BIG_MSG, request.getContentLength());
-//            }
-//
-//            final String contentType = request.getContentType();
-//            final FormDataParserProvider formDataParserProvider = FormDataParserProvider.findByContentType(contentType);
-//            this.getParser(formDataParserProvider).parseBodyParams(inputStream, request);
-//
-//            this.trimRequestPath(request);
-        return request;
+    private void trimRequestPath(HttpRequest request) {
+        request.setRequestURL(
+                request.getRequestURL().replaceAll("\\.{2,}\\/?", "")
+        );
+    }
+
+
+    private FormDataParser getParser(FormDataParserProvider provider) {
+        if (this.instanceProviderMap.containsKey(provider)) {
+            return this.instanceProviderMap.get(provider);
+        }
+
+        final FormDataParser formDataParser = this.formDataParsers.stream()
+                .filter(parser -> provider.getParserType().isAssignableFrom(parser.getClass()))
+                .findFirst()
+                .orElseThrow(() -> new CannotParseRequestException(String.format(
+                        "Could not find %s form data parser", provider
+                )));
+        this.instanceProviderMap.put(provider, formDataParser);
+
+        return formDataParser;
+    }
+
+    private void setContentLength(InputStream inputStream, HttpRequest request) throws IOException {
+        if (request.getHeader(ToyoteConstants.CONTENT_LENGTH) != null) {
+            request.setContentLength(Integer.parseInt(request.getHeader(ToyoteConstants.CONTENT_LENGTH)));
+        } else {
+            request.setContentLength(inputStream.available());
+        }
+    }
+
+    private void setMethodAndURL(String requestFirstLine, HttpRequest request) {
+        //GET / HTTP/1.1
+        // GET /index.html HTTP/1.1
+        request.setMethod(requestFirstLine.split("\\s")[0]); // method = "GET"
+        request.setRequestURL(URLDecoder.decode(
+                requestFirstLine.split("[\\s\\?]")[1], // requestURL = "/index.html"
+                StandardCharsets.UTF_8
+        ));
+    }
+
+    private void addQueryParameters(String requestFirstLine, HttpRequest request) {
+        // GET /index.html HTTP/1.1
+        final String fullRequestURL = requestFirstLine.split("\\s")[1]; // "/index.html"
+        final String[] urlQueryParamPair = fullRequestURL.split("\\?"); // ["/index.html"]
+
+        if (urlQueryParamPair.length >= 2) {
+            final String[] queryParamPairs = urlQueryParamPair[1].split("&");
+            final Map<String, String> queryParameters = request.getQueryParameters();
+            for (String paramPair : queryParamPairs) {
+                final String[] queryParamPair = paramPair.split("=");
+                final String keyName = decode(queryParamPair[0]);
+                final String value = queryParamPair.length > 1 ? decode(queryParamPair[1]) : null;
+                queryParameters.put(keyName, value);
+            }
+        }
+    }
+
+    private static String decode(String str) {
+        return URLDecoder.decode(str, StandardCharsets.UTF_8);
     }
 
     private List<String> parseMetadataLines(InputStream inputStream, boolean allowNewLineWithoutReturn)
@@ -147,40 +229,33 @@ public class HttpRequestParserImpl implements HttpRequestParser {
         }
     }
 
-    private void setMethodAndURL(String requestFirstLine, HttpRequest request) {
-        request.setMethod(requestFirstLine.split("\\s")[0]);
-        request.setRequestURL(URLDecoder.decode(
-                requestFirstLine.split("[\\s\\?]")[1],
-                StandardCharsets.UTF_8
-        ));
-    }
-
+    //    private void setMethodAndURL(String requestFirstLine, HttpRequest request) {
+//        request.setMethod(requestFirstLine.split("\\s")[0]);
+//        request.setRequestURL(URLDecoder.decode(
+//                requestFirstLine.split("[\\s\\?]")[1],
+//                StandardCharsets.UTF_8
+//        ));
+//    }
+//
     private void addHeaders(List<String> requestMetadata, HttpRequest request) {
+        //"Cookie" -> "amp_adc4c4=hAg1AIoLLyB9zCe6YyOcOE...1gppahnlf.1gppe4hqv.0.0.0; JAVACHE_SESSION_ID=461ee05f-1ce1-4640-9313-48cd8cedc792"
+        //"Accept" -> "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9"
+        //"Connection" -> "keep-alive"
+        //"User-Agent" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
+        //"Sec-Fetch-Site" -> "none"
+        //"Sec-Fetch-Dest" -> "document"
+        //"Host" -> "localhost:8000"
+        //"Accept-Encoding" -> "gzip, deflate, br"
+        //"Sec-Fetch-Mode" -> "navigate"
+        //"sec-ch-ua" -> ""Not_A Brand";v="99", "Google Chrome";v="109", "Chromium";v="109""
+        //"sec-ch-ua-mobile" -> "?0"
+        //"Upgrade-Insecure-Requests" -> "1"
+        //"sec-ch-ua-platform" -> ""Windows""
+        //"Sec-Fetch-User" -> "?1"
+        //"Accept-Language" -> "en-US,en;q=0.9"
         for (int i = 1; i < requestMetadata.size(); i++) {
             final String[] headerKeyValuePair = requestMetadata.get(i).split(":\\s+");
             request.addHeader(headerKeyValuePair[0], headerKeyValuePair[1]);
-        }
-    }
-
-    private void addQueryParameters(String requestFirstLine, HttpRequest request) {
-        final String fullRequestURL = requestFirstLine.split("\\s")[1];
-        final String[] urlQueryParamPair = fullRequestURL.split("\\?");
-
-        if (urlQueryParamPair.length < 2) {
-            return;
-        }
-
-        final String[] queryParamPairs = urlQueryParamPair[1].split("&");
-
-        final Map<String, String> queryParameters = request.getQueryParameters();
-
-        for (String paramPair : queryParamPairs) {
-            final String[] queryParamPair = paramPair.split("=");
-
-            final String keyName = decode(queryParamPair[0]);
-            final String value = queryParamPair.length > 1 ? decode(queryParamPair[1]) : null;
-
-            queryParameters.put(keyName, value);
         }
     }
 
@@ -188,50 +263,85 @@ public class HttpRequestParserImpl implements HttpRequestParser {
         if (request.getHeader(ToyoteConstants.COOKIE_HEADER_NAME) == null) {
             return;
         }
-
         final String[] allCookies = request.getHeader(ToyoteConstants.COOKIE_HEADER_NAME).split(";\\s");
-
         for (String cookieStr : allCookies) {
             final String[] cookieKeyValuePair = cookieStr.split("=");
-
             final String keyName = decode(cookieKeyValuePair[0]);
             final String value = cookieKeyValuePair.length > 1 ? decode(cookieKeyValuePair[1]) : null;
-
             request.getCookies().put(keyName, new HttpCookieImpl(keyName, value));
         }
     }
-
-    private void setContentLength(InputStream inputStream, HttpRequest request) throws IOException {
-        if (request.getHeader(ToyoteConstants.CONTENT_LENGTH) != null) {
-            request.setContentLength(Integer.parseInt(request.getHeader(ToyoteConstants.CONTENT_LENGTH)));
-        } else {
-            request.setContentLength(inputStream.available());
-        }
-    }
-
-    private static String decode(String str) {
-        return URLDecoder.decode(str, StandardCharsets.UTF_8);
-    }
-
-    private FormDataParser getParser(FormDataParserProvider provider) {
-        if (this.instanceProviderMap.containsKey(provider)) {
-            return this.instanceProviderMap.get(provider);
-        }
-
-        final FormDataParser formDataParser = this.formDataParsers.stream()
-                .filter(parser -> provider.getParserType().isAssignableFrom(parser.getClass()))
-                .findFirst()
-                .orElseThrow(() -> new CannotParseRequestException(String.format(
-                        "Could not find %s form data parser", provider
-                )));
-        this.instanceProviderMap.put(provider, formDataParser);
-
-        return formDataParser;
-    }
-
-    private void trimRequestPath(HttpRequest request) {
-        request.setRequestURL(
-                request.getRequestURL().replaceAll("\\.{2,}\\/?", "")
-        );
-    }
+//
+//    private void addQueryParameters(String requestFirstLine, HttpRequest request) {
+//        final String fullRequestURL = requestFirstLine.split("\\s")[1];
+//        final String[] urlQueryParamPair = fullRequestURL.split("\\?");
+//
+//        if (urlQueryParamPair.length < 2) {
+//            return;
+//        }
+//
+//        final String[] queryParamPairs = urlQueryParamPair[1].split("&");
+//
+//        final Map<String, String> queryParameters = request.getQueryParameters();
+//
+//        for (String paramPair : queryParamPairs) {
+//            final String[] queryParamPair = paramPair.split("=");
+//
+//            final String keyName = decode(queryParamPair[0]);
+//            final String value = queryParamPair.length > 1 ? decode(queryParamPair[1]) : null;
+//
+//            queryParameters.put(keyName, value);
+//        }
+//    }
+//
+//    private void initCookies(HttpRequest request) {
+//        if (request.getHeader(ToyoteConstants.COOKIE_HEADER_NAME) == null) {
+//            return;
+//        }
+//
+//        final String[] allCookies = request.getHeader(ToyoteConstants.COOKIE_HEADER_NAME).split(";\\s");
+//
+//        for (String cookieStr : allCookies) {
+//            final String[] cookieKeyValuePair = cookieStr.split("=");
+//
+//            final String keyName = decode(cookieKeyValuePair[0]);
+//            final String value = cookieKeyValuePair.length > 1 ? decode(cookieKeyValuePair[1]) : null;
+//
+//            request.getCookies().put(keyName, new HttpCookieImpl(keyName, value));
+//        }
+//    }
+//
+//    private void setContentLength(InputStream inputStream, HttpRequest request) throws IOException {
+//        if (request.getHeader(ToyoteConstants.CONTENT_LENGTH) != null) {
+//            request.setContentLength(Integer.parseInt(request.getHeader(ToyoteConstants.CONTENT_LENGTH)));
+//        } else {
+//            request.setContentLength(inputStream.available());
+//        }
+//    }
+//
+//    private static String decode(String str) {
+//        return URLDecoder.decode(str, StandardCharsets.UTF_8);
+//    }
+//
+//    private FormDataParser getParser(FormDataParserProvider provider) {
+//        if (this.instanceProviderMap.containsKey(provider)) {
+//            return this.instanceProviderMap.get(provider);
+//        }
+//
+//        final FormDataParser formDataParser = this.formDataParsers.stream()
+//                .filter(parser -> provider.getParserType().isAssignableFrom(parser.getClass()))
+//                .findFirst()
+//                .orElseThrow(() -> new CannotParseRequestException(String.format(
+//                        "Could not find %s form data parser", provider
+//                )));
+//        this.instanceProviderMap.put(provider, formDataParser);
+//
+//        return formDataParser;
+//    }
+//
+//    private void trimRequestPath(HttpRequest request) {
+//        request.setRequestURL(
+//                request.getRequestURL().replaceAll("\\.{2,}\\/?", "")
+//        );
+//    }
 }

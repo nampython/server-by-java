@@ -2,10 +2,13 @@ package org.nampython.center.dispatcher;
 
 import com.cyecize.ioc.annotations.Autowired;
 import com.cyecize.ioc.annotations.Service;
-import org.nampython.center.dispatcher.services.SoletConfig;
-import org.nampython.center.dispatcher.services.SoletConfigImpl;
-import org.nampython.center.dispatcher.services.SoletConstants;
+import org.nampython.center.dispatcher.services.*;
+import org.nampython.center.dispatcher.services.api.HttpRequest;
+import org.nampython.center.dispatcher.services.api.HttpResponse;
+import org.nampython.center.dispatcher.services.api.HttpStatus;
+import org.nampython.center.resourcehandler.SharedDataPropertyNames;
 import org.nampython.config.JavacheConfigService;
+import org.nampython.config.JavacheConfigValue;
 import org.nampython.log.LoggingService;
 import org.nampython.support.IoC;
 import org.nampython.support.RequestHandler;
@@ -23,6 +26,9 @@ public class SoletDispatcher implements RequestHandler {
     private final ApplicationLoadingService applicationLoadingService;
     private final LoggingService loggingService;
 
+    private final boolean trackResources;
+
+
     @Autowired
     public SoletDispatcher(SoletCandidateFinder soletCandidateFinder, SessionManagementService sessionManagementService, JavacheConfigService configService, ApplicationLoadingService applicationLoadingService, LoggingService loggingService) {
         this.soletCandidateFinder = soletCandidateFinder;
@@ -30,6 +36,7 @@ public class SoletDispatcher implements RequestHandler {
         this.configService = configService;
         this.applicationLoadingService = applicationLoadingService;
         this.loggingService = loggingService;
+        this.trackResources = configService.getConfigParam(JavacheConfigValue.BROCCOLINA_TRACK_RESOURCES, boolean.class);
     }
 
     @Override
@@ -47,14 +54,57 @@ public class SoletDispatcher implements RequestHandler {
     }
 
     @Override
-    public boolean handleRequest(InputStream inputStream, OutputStream responseStream, RequestHandlerSharedData sharedData) throws IOException {
-        return false;
+    public boolean handleRequest(InputStream inputStream, OutputStream outputStream, RequestHandlerSharedData sharedData) throws IOException {
+        final HttpSoletRequest request = new HttpSoletRequestImpl(
+                sharedData.getObject(SharedDataPropertyNames.HTTP_REQUEST, HttpRequest.class)
+        );
+
+        final HttpSoletResponse response = new HttpSoletResponseImpl(
+                sharedData.getObject(SharedDataPropertyNames.HTTP_RESPONSE, HttpResponse.class),
+                outputStream
+        );
+        if (request.isResource() && !this.trackResources) {
+            return false;
+        }
+        this.sessionManagementService.initSessionIfExistent(request);
+        final HttpSolet solet = this.soletCandidateFinder.findSoletCandidate(request);
+
+        if (solet == null || !this.runSolet(solet, request, response)) {
+            return false;
+        }
+        if (response.getStatusCode() == null) {
+            response.setStatusCode(HttpStatus.OK);
+        }
+        if (!response.getHeaders().containsKey(BroccolinaConstants.CONTENT_LENGTH_HEADER)
+                && response.getContent() != null
+                && response.getContent().length > 0) {
+            response.addHeader(BroccolinaConstants.CONTENT_LENGTH_HEADER, response.getContent().length + "");
+        }
+        this.sessionManagementService.sendSessionIfExistent(request, response);
+        this.sessionManagementService.clearInvalidSessions();
+        response.getOutputStream().write();
+
+        return true;
     }
 
     @Override
     public int order() {
-        return 0;
+        return (Integer)this.configService.getConfigParam(JavacheConfigValue.BROCCOLINA_SOLET_DISPATCHER_ORDER, Integer.TYPE);
     }
+
+
+    private boolean runSolet(HttpSolet solet, HttpSoletRequest request, HttpSoletResponse response) {
+        try {
+            solet.service(request, response);
+            return solet.hasIntercepted();
+        } catch (Exception ex) {
+            this.loggingService.printStackTrace(ex);
+        }
+
+        return true;
+    }
+
+
 
 
     /**
